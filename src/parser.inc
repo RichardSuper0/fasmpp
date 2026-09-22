@@ -1,103 +1,191 @@
 execute_universal_parser:
-    ; ESI = token_scratch_matrix, EDI = buffer codice macchina finale
-    
+    ; ESI = token_scratch_matrix, EDI = buffer codice finale
 .parser_main_loop:
     mov    al, [esi]                    ; Legge il primo byte dello slot token
-    cmp    al, 0xFF                     ; Controlla se e il marcatore EOF del lexer
-    je     .parser_exit_success         ; Esce se il parsing e completato
+    cmp    al, 0xFF                     ; Verifica fine dei token
+    je     .parser_exit
 
-    test   al, al                       ; Salta gli slot vuoti nella matrice
-    jz     .parser_next_slot
+    test   al, al                       ; Salta gli slot vuoti
+    jz     .parser_next
 
-    mov    bl, [active_isa_target]      ; Verifica se l'architettura e gia stata rilevata
-    test   bl, bl                       ; Se BL non e zero, l'ISA e gia bloccata
-    jnz    .dispatch_to_assembler_core
+    call   check_format_directive       ; Intercetta direttiva format
+    test   al, al
+    jnz    .parser_next
 
-    call   probe_register_isa_intent    ; Esegue l'Autodetect Hardware analizzando il token
-    mov    [active_isa_target], al      ; Memorizza l'ISA rilevata (1=x86, 2=ARM, 3=RISC-V)
+    call   check_segment_directive      ; Intercetta direttiva segment
+    test   al, al
+    jnz    .parser_next
 
-.dispatch_to_assembler_core:
-    call   execute_instruction_assembly_dispatch ; Salta al regista in assembler.inc
-    
-.parser_next_slot:
-    add    esi, 64                      ; Avanza rigido al prossimo slot da 64 byte
+    call   check_entry_directive        ; Intercetta direttiva entry
+    test   al, al
+    jnz    .parser_next
+
+    call   check_symbol_assignment      ; Risolve lunghezze ed etichette (=)
+    test   al, al
+    jnz    .parser_next
+
+    mov    bl, [active_isa_target]      ; Autodetect hardware basato sui registri
+    test   bl, bl
+    jnz    .dispatch
+    call   probe_register_isa_intent
+    mov    [active_isa_target], al
+
+.dispatch:
+    call   execute_instruction_assembly_dispatch
+.parser_next:
+    add    esi, 64                      ; Prossimo slot da 64 byte in cache L1
     jmp    .parser_main_loop
+.parser_exit:
+    ret
 
-.parser_exit_success:
+check_format_directive:
+    mov    eax, [esi]
+    cmp    eax, 'mrof'                  ; Verifica "form"
+    jne    .not_format
+    mov    bl, [esi+4]
+    cmp    bl, 'a'
+    jne    .not_format
+    mov    bl, [esi+5]
+    cmp    bl, 't'
+    jne    .not_format
+
+    add    esi, 64                      ; Legge argomento formato
+    mov    eax, [esi]
+    cmp    eax, 'enib'                  ; "bina" -> binary flat
+    je     .set_bin
+    cmp    eax, 'FLE'                   ; "ELF"
+    je     .eval_elf
+    cmp    eax, '  EP'                  ; "PE"
+    je     .eval_pe
+    xor    al, al
+    ret
+.set_bin:
+    mov    byte [output_format_type], 0
+    mov    al, 1
+    ret
+.eval_elf:
+    mov    bl, [esi+4]
+    cmp    bl, '6'                      ; ELF64
+    je     .set_elf64
+    mov    byte [output_format_type], 1 ; ELF32 default
+    mov    al, 1
+    ret
+.set_elf64:
+    mov    byte [output_format_type], 2
+    mov    al, 1
+    ret
+.eval_pe:
+    mov    bl, [esi+4]
+    cmp    bl, '6'                      ; PE64
+    je     .set_pe64
+    mov    byte [output_format_type], 3 ; PE32 default
+    mov    al, 1
+    ret
+.set_pe64:
+    mov    byte [output_format_type], 4
+    mov    al, 1
+    ret
+.not_format:
+    xor    al, al
+    ret
+
+check_segment_directive:
+    mov    eax, [esi]
+    cmp    eax, 'mges'                  ; Verifica "segm"
+    jne    .not_segment
+    mov    bl, [esi+4]
+    cmp    bl, 'e'
+    jne    .not_segment
+    mov    bl, [esi+5]
+    cmp    bl, 'n'
+    jne    .not_segment
+    mov    bl, [esi+6]
+    cmp    bl, 't'
+    jne    .not_segment
+    add    esi, 64                      ; Salta ad attributi hardware
+    mov    al, 1
+    ret
+.not_segment:
+    xor    al, al
+    ret
+
+check_entry_directive:
+    mov    eax, [esi]
+    cmp    eax, 'rtne'                  ; Verifica "entr"
+    jne    .not_entry
+    mov    bl, [esi+4]
+    cmp    bl, 'y'                      ; Verifica "y"
+    jne    .not_entry
+
+    add    esi, 64                      ; Salta allo slot del simbolo entry point
+    ; [...] Prende il token corrente in ESI (es. _start)
+    ; [...] Cerca l'indirizzo RAM associato e lo scrive in [hardware_entry_point]
+    mov    al, 1                        ; Segnala direttiva consumata
+    ret
+.not_entry:
+    xor    al, al
+    ret
+
+check_symbol_assignment:
+    mov    eax, [esi+64]                ; Guarda lo slot successivo
+    cmp    byte [esi+64], '='           ; Identifica operatore costante
+    jne    .not_assignment
+    
+    ; [...] Prende il token in ESI come nome etichetta (es. len)
+    ; [...] Calcola la differenza matematica ($ - msg) usando il [location_counter]
+    ; [...] Memorizza l'intero nella tabella dei simboli in RAM scratch
+    mov    al, 1
+    add    esi, 64                      ; Consuma l'operatore '=' saltando in avanti
+    ret
+.not_assignment:
+    xor    al, al
     ret
 
 probe_register_isa_intent:
-    push   esi                          ; Salva l'inizio dello slot corrente
-    mov    al, [esi]                    ; Carica il primo carattere del token stringa
-
-    cmp    al, 'r'                      ; Filtro registri estesi x86 o 'ra' RISC-V
-    je     .eval_r_prefix
-    cmp    al, 'e'                      ; Filtro registri estesi x86 a 32-bit (eax, ebx...)
+    push   esi
+    mov    al, [esi]
+    cmp    al, 'r'
+    je     .eval_r
+    cmp    al, 'e'
     je     .confirm_x86
-
-    mov    ah, [esi+1]                  ; Analisi secondo carattere per suffissi x86 a 16-bit
-    cmp    ah, 'x'                      ; Registri ax, bx, cx, dx
+    mov    ah, [esi+1]
+    cmp    ah, 'x'
     je     .confirm_x86
-    cmp    ah, 'p'                      ; Registri sp, bp
+    cmp    ah, 'p'
     je     .confirm_x86
-    cmp    ah, 'i'                      ; Registri si, di
+    cmp    ah, 'i'
     je     .confirm_x86
-
-    cmp    al, 'w'                      ; Filtro registri a 32-bit ARM A64 (w0-w31)
+    cmp    al, 'w'
     je     .confirm_arm
-
-    cmp    al, 'x'                      ; Gestione ambiguita registri 'x' (ARM64 vs RISC-V)
-    je     .resolve_x_register
-
-    mov    eax, [esi]                   ; Carica i primi 4 byte per gli alias RISC-V
-    cmp    eax, 'orez'                  ; Stringa "zero" in Little Endian
+    cmp    al, 'x'
+    je     .resolve_x
+    mov    eax, [esi]
+    cmp    eax, 'orez'                  ; "zero" RISC-V
     je     .confirm_riscv
-    
-    movzx  eax, word [esi]              ; Carica i primi 2 byte per gli alias corti RISC-V
-    cmp    ax, 'ps'                     ; Stringa "sp" (Stack Pointer)
-    je     .confirm_riscv
-    cmp    ax, 'pg'                     ; Stringa "gp" (Global Pointer)
-    je     .confirm_riscv
-
-    xor    al, al                       ; Architettura non identificabile da questo token
+    xor    al, al
     pop    esi
     ret
-
-.eval_r_prefix:
-    mov    ah, [esi+1]                  ; Controlla il carattere dopo 'r'
-    cmp    ah, 'a'                      ; Se trova 'a', potrebbe essere 'ra' di RISC-V
-    jne    .confirm_x86                 ; Se non e 'a', sono registri x86 (rax, rbx, r8-r31)
-    mov    bl, [esi+2]                  ; Controlla il terzo carattere dello slot
-    test   bl, bl                       ; Se e zero, la stringa e esattamente "ra"
-    jz     .confirm_riscv               ; "ra" esatto (Return Address) = RISC-V
-    jmp    .confirm_x86                 ; Se continua (es. "rax"), allora e x86_64
-
-.resolve_x_register:
-    mov    ah, [esi+1]                  ; Legge il carattere dopo la 'x'
-    cmp    ah, '0'                      ; Verifica che sia una cifra numerica valida
-    jb     .unknown_token
-    cmp    ah, '9'
-    ja     .unknown_token
-    mov    al, [default_host_isa_context] ; Risolve l'ambiguita usando il contesto del blob host
+.eval_r:
+    mov    ah, [esi+1]
+    cmp    ah, 'a'
+    jne    .confirm_x86
+    mov    bl, [esi+2]
+    test   bl, bl
+    jz     .confirm_riscv               ; "ra" esatto = RISC-V
+    jmp    .confirm_x86
+.resolve_x:
+    mov    al, [default_host_isa_context]
     pop    esi
     ret
-
 .confirm_x86:
-    mov    al, 1                        ; ID Architettura 1 = x86
+    mov    al, 1
     pop    esi
     ret
-
 .confirm_arm:
-    mov    al, 2                        ; ID Architettura 2 = ARM
+    mov    al, 2
     pop    esi
     ret
-
 .confirm_riscv:
-    mov    al, 3                        ; ID Architettura 3 = RISC-V
-    pop    esi
-    ret
-
-.unknown_token:
-    xor    al, al                       ; Ritorna 0 (Token generico o istruzione)
+    mov    al, 3
     pop    esi
     ret
