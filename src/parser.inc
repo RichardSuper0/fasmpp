@@ -1,11 +1,12 @@
 execute_universal_parser:
     ; ESI = token_scratch_matrix, EDI = buffer codice finale
+    
 .parser_main_loop:
-    mov    al, [esi]                    ; Legge il primo byte dello slot token
+    mov    al, [esi]
     cmp    al, 0xFF                     ; Verifica fine dei token
     je     .parser_exit
 
-    test   al, al                       ; Salta gli slot vuoti
+    test   al, al                       ; Salta slot vuoti
     jz     .parser_next
 
     call   check_format_directive       ; Intercetta direttiva format
@@ -24,7 +25,7 @@ execute_universal_parser:
     test   al, al
     jnz    .parser_next
 
-    mov    bl, [active_isa_target]      ; Autodetect hardware basato sui registri
+    mov    bl, [active_isa_target]      ; Autodetect hardware registri
     test   bl, bl
     jnz    .dispatch
     call   probe_register_isa_intent
@@ -33,7 +34,7 @@ execute_universal_parser:
 .dispatch:
     call   execute_instruction_assembly_dispatch
 .parser_next:
-    add    esi, 64                      ; Prossimo slot da 64 byte in cache L1
+    add    esi, 64                      ; Avanza allo slot da 64 byte in cache line
     jmp    .parser_main_loop
 .parser_exit:
     ret
@@ -49,18 +50,19 @@ check_format_directive:
     cmp    bl, 't'
     jne    .not_format
 
-    add    esi, 64                      ; Legge argomento formato
+    add    esi, 64                      ; Consuma "format" e passa all'argomento
     mov    eax, [esi]
     cmp    eax, 'enib'                  ; "bina" -> binary flat
     je     .set_bin
-    cmp    eax, 'FLE'                   ; "ELF"
+    cmp    eax, 'FLE '                  ; "ELF "
     je     .eval_elf
-    cmp    eax, '  EP'                  ; "PE"
+    cmp    eax, '  EP'                  ; "PE  "
     je     .eval_pe
-    xor    al, al
-    ret
+
+    jmp    .trigger_format_error        ; Formato invalido o sconosciuto (es. ELFWWW)
+
 .set_bin:
-    mov    byte [output_format_type], 0
+    mov    byte [output_format_type], 0 ; Format 0 = binary piatto crudo
     mov    al, 1
     ret
 .eval_elf:
@@ -117,25 +119,23 @@ check_entry_directive:
     cmp    bl, 'y'                      ; Verifica "y"
     jne    .not_entry
 
-    add    esi, 64                      ; Salta allo slot del simbolo entry point
-    ; [...] Prende il token corrente in ESI (es. _start)
-    ; [...] Cerca l'indirizzo RAM associato e lo scrive in [hardware_entry_point]
-    mov    al, 1                        ; Segnala direttiva consumata
+    add    esi, 64                      ; Passa allo slot dell'etichetta entry point
+    ; [...] Prende l'indirizzo dell'etichetta (es. _start) e aggiorna [hardware_entry_point]
+    mov    al, 1
     ret
 .not_entry:
     xor    al, al
     ret
 
 check_symbol_assignment:
-    mov    eax, [esi+64]                ; Guarda lo slot successivo
-    cmp    byte [esi+64], '='           ; Identifica operatore costante
+    mov    eax, [esi+64]                ; Controlla lo slot successivo
+    cmp    byte [esi+64], '='           ; Identifica l'operatore costante
     jne    .not_assignment
     
-    ; [...] Prende il token in ESI come nome etichetta (es. len)
-    ; [...] Calcola la differenza matematica ($ - msg) usando il [location_counter]
-    ; [...] Memorizza l'intero nella tabella dei simboli in RAM scratch
+    ; [...] Risolve l'equazione (len = $ - msg) leggendo il [location_counter]
+    ; [...] Inserisce il valore risultante nella tabella simboli scratch RAM
     mov    al, 1
-    add    esi, 64                      ; Consuma l'operatore '=' saltando in avanti
+    add    esi, 64                      ; Salta oltre l'operatore '=' consumato
     ret
 .not_assignment:
     xor    al, al
@@ -188,4 +188,23 @@ probe_register_isa_intent:
 .confirm_riscv:
     mov    al, 3
     pop    esi
+    ret
+
+; --- STRUTTURA DI SCATOLA NERA E CONGELAMENTO ERRORI ---
+.trigger_format_error:
+    mov    dword [core_error_code], 0x06 ; Codice errore 0x06 (Invalid Format)
+    jmp    .freeze_diagnostics
+
+.trigger_illegal_instruction:
+    mov    dword [core_error_code], 0x05 ; Codice errore 0x05 (Illegal Instruction)
+
+.freeze_diagnostics:
+    mov    [error_token_ptr], esi       ; Salva indirizzo inizio stringa fallita
+    mov    eax, [esi+52]                ; Estrae l'offset RAM del file originale
+    mov    [error_file_addr], eax
+    mov    eax, [esi+56]                ; Estrae riga esatta congelata dal lexer
+    mov    [error_line], eax
+    mov    eax, [esi+60]                ; Estrae colonna esatta congelata dal lexer
+    mov    [error_column], eax
+    xor    al, al                       ; Forza l'uscita interrompendo il ciclo
     ret
