@@ -1,94 +1,113 @@
 evaluate_trigger_intent:
-    ; ESI = stringa parametri CLI cruda, EDI = buffer di output finale
+    ; ESI = puntatore alla stringa parametri CLI, EDI = buffer di output in RAM
     mov    [output_base_ptr], edi       ; Salva indirizzo inizio buffer
     mov    [output_current_ptr], edi    ; Inizializza puntatore corrente
 
-    test   esi, esi                     ; Verifica se CLI e vuota
+    test   esi, esi                     ; Verifica se la riga di comando e NULL
     jz     .cli_error_exit
 
-.cli_scan_loop:
-    mov    al, [esi]                    ; Legge carattere CLI
-    test   al, al                       ; Controlla fine stringa
-    jz     .validate_extracted_paths
+    mov    al, [esi]                    ; Legge il primo carattere della CLI
+    test   al, al                       ; Controlla se stringa vuota
+    jz     .cli_error_exit
 
-    cmp    al, '-'                      ; Intercetta inizio flag
-    jne    .next_cli_char
+    ; --- ISOLAMENTO PRIMO ARGOMENTO (SOURCE) ---
+    mov    [source_file_path_ptr], esi  ; Blocca l'inizio del path sorgente
+    call   scan_and_terminate_arg       ; Cerca lo spazio e tronca con uno zero
+    
+    ; AL ritorna con il delimitatore trovato: se e 0 significa che la CLI e finita (1 argomento)
+    test   al, al
+    jz     .handle_single_argument      ; Salta alla troncatura automatica se c'e solo un file
 
-    mov    bl, [esi+1]                  ; Isola il carattere flag
-    cmp    bl, 's'                      ; Controlla flag sorgente
-    je     .parse_source_arg
-
-    cmp    bl, 'o'                      ; Controlla flag output
-    je     .parse_output_arg
-
-.next_cli_char:
-    inc    esi                          ; Avanza nella CLI
-    jmp    .cli_scan_loop
-
-.parse_source_arg:
-    add    esi, 2                       ; Salta "-s"
-.strip_spaces_source:
-    mov    al, [esi]                    ; Legge path
-    cmp    al, 0x20                     ; Salta spazi vuoti
-    je     .inc_source_space
-    cmp    al, 0x09                     ; Salta tabulazioni
-    jne    .lock_source_pointer
-.inc_source_space:
+    ; --- ISOLAMENTO SECONDO ARGOMENTO (OUTPUT OPZIONALE) ---
+    ; ESI e stato avanzato oltre lo zero dal modulo di scansione ed e pronto
+.skip_inter_spaces:
+    mov    al, [esi]                    ; Legge i caratteri tra i due argomenti
+    cmp    al, 0x20                     ; Salta gli spazi vuoti aggiuntivi
+    je     .next_inter_space
+    cmp    al, 0x09                     ; Salta le tabulazioni
+    jne    .lock_explicit_output
+.next_inter_space:
     inc    esi
-    jmp    .strip_spaces_source
-.lock_source_pointer:
-    mov    [source_file_path_ptr], esi  ; Blocca inizio stringa sorgente
-    call   isolate_path_string          ; Esegue null-termination in-place
-    jmp    .cli_scan_loop
+    jmp    .skip_inter_spaces
 
-.parse_output_arg:
-    add    esi, 2                       ; Salta "-o"
-.strip_spaces_output:
-    mov    al, [esi]
-    cmp    al, 0x20                     ; Salta spazi vuoti
-    je     .inc_output_space
-    cmp    al, 0x09                     ; Salta tabulazioni
-    jne    .lock_output_pointer
-.inc_output_space:
-    inc    esi
-    jmp    .strip_spaces_output
-.lock_output_pointer:
-    mov    [output_file_path_ptr], esi  ; Blocca inizio stringa output
-    call   isolate_path_string          ; Esegue null-termination in-place
-    jmp    .cli_scan_loop
+.lock_explicit_output:
+    test   al, al                       ; Se dopo gli spazi c'e la fine della CLI, era solo un file
+    jz     .handle_single_argument
 
-.validate_extracted_paths:
-    cmp    dword [source_file_path_ptr], 0 ; Verifica presenza path sorgente
-    je     .cli_error_exit
-    cmp    dword [output_file_path_ptr], 0 ; Verifica presenza path output
-    je     .cli_error_exit
+    mov    [output_file_path_ptr], esi  ; Salva il puntatore all'output esplicito (es. main.exe)
+    call   scan_and_terminate_arg       ; Isola anche il secondo argomento eliminando spazzatura finale
+    jmp    .start_pipeline_execution
 
-    mov    esi, [source_file_path_ptr]  ; Carica path sorgente per il lexer
-    lea    edx, [token_scratch_matrix]  ; Punta alla matrice scratch
+.handle_single_argument:
+    ; Se l'utente non ha specificato l'output, calcola il nome troncando l'estensione
+    call   build_automatic_output_name
+
+.start_pipeline_execution:
+    ; --- AVVIO PIPELINE HARDWARE ---
+    mov    esi, [source_file_path_ptr]  ; Carica il percorso del sorgente
+    lea    edx, [token_scratch_matrix]  ; Punta alla matrice scratch per i token
     call   execute_lexer_32             ; Avvia il lexer a 32-bit protetti
 
-    lea    esi, [token_scratch_matrix]  ; Passa i token estratti al parser
-    call   execute_universal_parser     ; Avvia autodetect e traduzione bitwise
+    lea    esi, [token_scratch_matrix]  ; Passa la matrice degli slot al parser
+    call   execute_universal_parser     ; Avvia l'autodetect e l'emissione dei bit
     ret
 
 .cli_error_exit:
-    mov    dword [core_error_code], 0x01 ; Errore 1: CLI invalida o incompleta
+    mov    dword [core_error_code], 0x01 ; Errore 1: Manca il file di input
     ret
 
-isolate_path_string:
-    push   esi                          ; Salva puntatore scansione path
-.iso_loop:
-    mov    al, [esi]                    ; Legge carattere path
-    test   al, al                       ; Fine stringa naturale
-    jz     .iso_done
-    cmp    al, 0x20                     ; Spazio interrompe il path
-    je     .iso_null
-    cmp    al, 0x09                     ; Tab interrompe il path
-    je     .iso_null
+scan_and_terminate_arg:
+    ; Scansiona la stringa in ESI fino a uno spazio, tab o fine stringa.
+    ; Inietta uno zero per isolare l'argomento e avanza ESI oltre lo zero.
+.scan_loop:
+    mov    al, [esi]
+    test   al, al
+    jz     .found_term_char
+    cmp    al, 0x20
+    je     .found_term_char
+    cmp    al, 0x09
+    je     .found_term_char
     inc    esi
-    jmp    .iso_loop
-.iso_null:
+    jmp    .scan_loop
+.found_term_char:
+    push   eax                          ; Salva il carattere delimitatore (0, spazio o tab)
     mov    byte [esi], 0                ; Inietta null-termination in-place
-.iso_done:
-    pop    esi                          ; Ripristina puntatore
+    inc    esi                          ; Avanza oltre lo zero appena scritto
+    pop    eax                          ; Ripristina il vecchio delimitatore in AL
     ret
+
+build_automatic_output_name:
+    ; Routine speculare: copia la sorgente nel buffer e taglia l'estensione al primo punto
+    push   esi
+    mov    esi, [source_file_path_ptr]
+    lea    edi, [output_file_path_buffer]
+    mov    [output_file_path_ptr], edi
+
+.copy_auto_loop:
+    mov    al, [esi]
+    mov    [edi], al
+    test   al, al
+    jz     .find_dot_to_truncate
+    inc    esi
+    inc    edi
+    jmp    .copy_auto_loop
+
+.find_dot_to_truncate:
+    mov    edi, [output_file_path_ptr]
+.scan_dot_loop:
+    mov    al, [edi]
+    test   al, al
+    jz     .auto_done
+    cmp    al, '.'                      ; Cerca il punto dell'estensione (es. "main.asm")
+    je     .truncate_at_dot
+    inc    edi
+    jmp    .scan_dot_loop
+
+.truncate_at_dot:
+    mov    byte [edi], 0                ; Taglia via l'estensione: rimane solo "main"
+.auto_done:
+    pop    esi
+    ret
+
+segment readable writeable
+output_file_path_buffer rb 256          ; Spazio RAM per la generazione dell'output automatico
