@@ -1,6 +1,8 @@
 assemble_arm_instruction_node:
     ; ESI = slot token istruzione, EDI = buffer output codice macchina
-    call   decode_arm_operands          ; Analizza lo slot per capire lo stato ARM32/ARM64
+    push   esi                          ; Preserva ESI per non sfasare il parser centrale
+    call   decode_arm_operands          ; Analizza gli slot operandi per riempire rd, rn, rm
+    pop    esi                          ; Ripristina ESI originale
     
     mov    al, [arm_mode_width]         ; Rileva larghezza (32 = ARM32, 64 = ARM64 nativo)
     cmp    al, 64
@@ -34,33 +36,77 @@ assemble_arm_instruction_node:
     ret
 
 decode_arm_operands:
-    add    esi, 64                      ; Passa all'operando di destinazione
-    mov    al, [esi]
-    cmp    al, 'w'                      ; Registro 'w' o 'x' indica ARM64 nativo A64
-    je     .set_arm64_context
-    cmp    al, 'x'
-    je     .set_arm64_context
+    ; Estrazione dinamica operandi: istruzione -> rd -> rn -> rm (distanti 64 byte l'uno dall'altro)
     
-    ; Altrimenti e un registro 'r' classico (r0-r15) di ARM32
+    ; 1. Elabora RD (Destinazione)
+    add    esi, 64                      
+    call   parse_single_arm_register
+    mov    [arm_rd], al
+
+    ; 2. Elabora RN (Primo sorgente)
+    add    esi, 64                      
+    call   parse_single_arm_register
+    mov    [arm_rn], al
+
+    ; 3. Elabora RM (Secondo sorgente)
+    add    esi, 64                      
+    call   parse_single_arm_register
+    mov    [arm_rm], al
+    ret
+
+parse_single_arm_register:
+    ; Input: ESI = punta allo slot del registro corrente
+    ; Output: AL = ID registro numerico pulito (0-31)
+    push   esi
+    mov    al, [esi]
+    
+    cmp    al, 'w'                      ; Registro 'w' indica ARM64
+    je     .set_arm64
+    cmp    al, 'x'                      ; Registro 'x' indica ARM64
+    je     .set_arm64
+    
+    ; Altrimenti assume contesto ARM32 per registri 'r'
     mov    byte [arm_mode_width], 32
-    mov    al, [esi+1]
-    sub    al, '0'
-    mask_reg_id eax
-    mov    [arm_rd], al
-    ret
+    jmp    .parse_digits
 
-.set_arm64_context:
+.set_arm64:
     mov    byte [arm_mode_width], 64
-    mov    al, [esi+1]                  ; Estrae l'ID del registro (0-31)
-    sub    al, '0'
-    mask_reg_id eax
-    mov    [arm_rd], al
+
+.parse_digits:
+    inc    esi                          ; Salta il prefisso del registro ('w', 'x' o 'r')
+    movzx  eax, byte [esi]
+    sub    eax, '0'                     ; Converte il primo carattere in numero
+    cmp    eax, 9
+    ja     .invalid_reg                 ; Sicurezza: non è un numero valido
+    
+    ; Controlla se c'è una seconda cifra numerica (es. x12, x30)
+    movzx  ebx, byte [esi+1]
+    test   bl, bl
+    jz     .done_parsing                ; Se è zero, il numero ha una sola cifra ed è già in EAX
+    
+    sub    bl, '0'
+    cmp    bl, 9
+    ja     .done_parsing                ; Se non è un numero (es. virgola o spazio), si ferma alla prima cifra
+    
+    ; Algoritmo: (Cifra1 * 10) + Cifra2
+    imul   eax, 10
+    add    eax, ebx
+
+.done_parsing:
+    mask_reg_id eax                     ; Applica la maschera di sicurezza a 5 bit (0-31) dall'inc delle macro
+    pop    esi
     ret
 
-arm_mode_width     db 64                ; Fallback contesto 64-bit nativo (ARMv8/v9)
-arm32_base_opcode  dd 0x00800000        ; Base opcode ADD intero ARM32
-arm64_base_opcode  dd 0x8B000000        ; Base opcode ADD intero A64
-arm_cond_field     db 0x0E              ; Condizione 14 (AL = Always execution)
+.invalid_reg:
+    xor    eax, eax                     ; Fallback di sicurezza su registro 0
+    pop    esi
+    ret
+
+align_to_l1
+arm_mode_width     db 64                ; Conﬁgurazione architettura (32 o 64)
+arm32_base_opcode  dd 0x00800000        ; Opcode ADD ARM32
+arm64_base_opcode  dd 0x8B000000        ; Opcode ADD ARM64
+arm_cond_field     db 0x0E              ; Condizione predefinita ALWAYS (1110b)
 arm_rd             db 0
 arm_rn             db 0
 arm_rm             db 0
