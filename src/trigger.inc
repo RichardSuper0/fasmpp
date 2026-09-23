@@ -3,95 +3,119 @@ evaluate_trigger_intent:
     mov    [output_base_ptr], edi       ; Salva indirizzo inizio buffer
     mov    [output_current_ptr], edi    ; Inizializza puntatore corrente
 
-    test   esi, esi                     ; Verifica se CLI e NULL
+    test   esi, esi                     ; Verifica se CLI è NULL
     jz     .cli_error_exit
 
     mov    al, [esi]                    ; Legge primo carattere
     test   al, al                       ; Controlla se vuoto
     jz     .cli_error_exit
 
-    mov    [source_file_path_ptr], esi  ; Salva puntatore sorgente
-    call   scan_and_terminate_arg       ; Isola il primo argomento
+    mov    [source_file_path_ptr], esi  ; Salva l'inizio del primo argomento (sorgente)
+    call   scan_and_terminate_arg       ; Isola il primo argomento. Al ritorno ESI punta DOPO lo 0 inserito
     
-    test   al, al                       ; Se AL e 0, c'e solo 1 argomento
-    jz     .handle_single_argument
+    ; Determina se c'era un secondo argomento analizzando dove si è fermata la scansione
+    test   al, al                       
+    jz     .handle_single_argument      ; Se la stringa CLI era già finita (AL=0), c'è solo un argomento
 
 .skip_inter_spaces:
-    mov    al, [esi]                    ; Legge spazi tra argomenti
-    check_delimiter_and_skip al, 0x20, .next_inter_space
-    check_delimiter_and_skip al, 0x09, .next_inter_space
+    mov    al, [esi]                    ; Legge gli spazi vuoti tra il primo e il secondo argomento
+    cmp    al, 0x20
+    je     .next_inter_space
+    cmp    al, 0x09
+    je     .next_inter_space
     jmp    .lock_explicit_output
 .next_inter_space:
     inc    esi
     jmp    .skip_inter_spaces
 
 .lock_explicit_output:
-    test   al, al                       ; Se fine stringa, era un solo argomento
+    test   al, al                       ; Se siamo a fine stringa, non c'è un secondo argomento reale
     jz     .handle_single_argument
 
-    mov    [output_file_path_ptr], esi  ; Salva puntatore output esplicito
-    call   scan_and_terminate_arg       ; Isola il secondo argomento
+    mov    [output_file_path_ptr], esi  ; Salva il puntatore esatto all'inizio del secondo argomento
+    call   scan_and_terminate_arg       ; Isola e pulisce il secondo argomento
     jmp    .start_pipeline
 
 .handle_single_argument:
-    call   build_automatic_output_name  ; Tronca estensione e crea nome piatto
+    call   build_automatic_output_name  ; Genera automaticamente il nome di output piatto
 
 .start_pipeline:
-    mov    esi, [source_file_path_ptr]  ; Passa sorgente al lexer
+    mov    esi, [source_file_path_ptr]  ; Passa il percorso sorgente al lexer
     lea    edx, [token_scratch_matrix]
     call   execute_lexer_32
 
-    lea    esi, [token_scratch_matrix]  ; Passa matrice al tokenizer/parser
+    lea    esi, [token_scratch_matrix]  ; Passa la matrice al tokenizer
     call   execute_tokenizer_32
-    lea    esi, [token_scratch_matrix]
+    
+    lea    esi, [token_scratch_matrix]  ; Avvia l'analisi sintattica e la generazione nel parser
     call   execute_universal_parser
     ret
 
 .cli_error_exit:
-    mov    dword [core_error_code], 0x01 ; Errore CLI
+    mov    dword [core_error_code], 0x01 ; Codice Errore CLI
     ret
 
 scan_and_terminate_arg:
+    ; Scansiona la stringa CLI. Termina al primo spazio/tab inserendo uno 0.
+    ; Restituisce in AL il carattere che ha interrotto la scansione (0, spazio o tab).
 .scan_loop:
     mov    al, [esi]
     test   al, al
     jz     .found_term
-    check_delimiter_and_skip al, 0x20, .found_term
-    check_delimiter_and_skip al, 0x09, .found_term
+    cmp    al, 0x20
+    je     .found_term
+    cmp    al, 0x09
+    je     .found_term
     inc    esi
     jmp    .scan_loop
 .found_term:
-    push   eax
-    mov    byte [esi], 0                ; Null-termination in-place
-    inc    esi
-    pop    eax
+    push   eax                          ; Salva il carattere di stop (0 o spazio)
+    mov    byte [esi], 0                ; Taglia e chiude la stringa localmente (Null-termination in-place)
+    inc    esi                          ; Sposta ESI sul carattere successivo per i controlli futuri
+    pop    eax                          ; Ripristina il carattere di stop in AL per il chiamante
     ret
 
 build_automatic_output_name:
     push   esi
+    push   edi
     mov    esi, [source_file_path_ptr]
     lea    edi, [output_file_path_buffer]
-    mov    [output_file_path_ptr], edi
+    mov    [output_file_path_ptr], edi  ; Imposta la variabile globale sul nostro buffer statico
+
 .copy_auto:
     mov    al, [esi]
     mov    [edi], al
     test   al, al
-    jz     .find_dot
+    jz     .find_last_dot               ; Copia finita, passiamo alla ricerca dell'estensione
     inc    esi
     inc    edi
     jmp    .copy_auto
-.find_dot:
-    mov    edi, [output_file_path_ptr]
-.scan_dot:
-    mov    al, [edi]
-    test   al, al
-    jz     .auto_done
-    check_delimiter_and_skip al, '.', .truncate
-    inc    edi
-    jmp    .scan_dot
+
+.find_last_dot:
+    ; EDI adesso punta allo zero terminale del buffer copiato. Torniamo indietro (scansione retrograda)
+    ; per trovare l'ULTIMO punto, evitando di rompere i percorsi con cartelle dot-named tipo "../dir/"
+    mov    ecx, edi                     ; Salva la fine per calcolare i limiti
+    mov    edi, [output_file_path_ptr]  ; Ripartiamo dall'inizio del buffer per sicurezza di calcolo dei limiti
+    
+.scan_backwards:
+    dec    ecx
+    cmp    ecx, edi                     ; Siamo tornati all'inizio del file senza trovare punti?
+    je     .auto_done
+    
+    mov    al, [ecx]
+    cmp    al, '/'                      ; Se incontriamo un separatore di cartella prima del punto, non c'è estensione
+    je     .auto_done
+    cmp    al, '\'                      ; Supporto opzionale per percorsi in stile Windows
+    je     .auto_done
+    
+    cmp    al, '.'                      ; Trovato l'ultimo punto reale del file!
+    jne    .scan_backwards
+
 .truncate:
-    mov    byte [edi], 0                ; Taglia estensione
+    mov    byte [ecx], 0                ; Tronca l'estensione (es. "file.asm" diventa "file")
+
 .auto_done:
+    pop    edi
     pop    esi
     ret
 
