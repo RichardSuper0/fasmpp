@@ -4,18 +4,18 @@ evaluate_trigger_intent:
     mov    [output_current_ptr], edi    ; Inizializza puntatore corrente
 
     test   esi, esi                     ; Verifica se CLI è NULL
-    jz     .cli_error_exit
+    jz     near .cli_error_exit
 
     mov    al, [esi]                    ; Legge primo carattere
     test   al, al                       ; Controlla se vuoto
-    jz     .cli_error_exit
+    jz     near .cli_error_exit
 
     mov    [source_file_path_ptr], esi  ; Salva l'inizio del primo argomento (sorgente)
     call   scan_and_terminate_arg       ; Isola il primo argomento. Al ritorno ESI punta DOPO lo 0 inserito
     
     ; Determina se c'era un secondo argomento analizzando dove si è fermata la scansione
     test   al, al                       
-    jz     .handle_single_argument      ; Se la stringa CLI era già finita (AL=0), c'è solo un argomento
+    jz     near .handle_single_argument ; Se la stringa CLI era già finita (AL=0), c'è solo un argomento
 
 .skip_inter_spaces:
     mov    al, [esi]                    ; Legge gli spazi vuoti tra il primo e il secondo argomento
@@ -30,7 +30,7 @@ evaluate_trigger_intent:
 
 .lock_explicit_output:
     test   al, al                       ; Se siamo a fine stringa, non c'è un secondo argomento reale
-    jz     .handle_single_argument
+    jz     near .handle_single_argument
 
     mov    [output_file_path_ptr], esi  ; Salva il puntatore esatto all'inizio del secondo argomento
     call   scan_and_terminate_arg       ; Isola e pulisce il secondo argomento
@@ -86,7 +86,7 @@ build_automatic_output_name:
     mov    al, [esi]
     mov    [edi], al
     test   al, al
-    jz     .find_last_dot               ; Copia finita, passiamo alla ricerca dell'estensione
+    jz     near .find_last_dot          ; Copia finita, passiamo alla ricerca dell'estensione
     inc    esi
     inc    edi
     jmp    .copy_auto
@@ -118,5 +118,3 @@ build_automatic_output_name:
     pop    edi
     pop    esi
     ret
-
-output_file_path_buffer rb 256
