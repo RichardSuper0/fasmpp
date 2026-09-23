@@ -9,26 +9,26 @@ execute_universal_parser:
     test   al, al                       ; Salta slot vuoti
     jz     .parser_next
 
-    cmp    dword [core_error_code], 0   ; Se è scattato un errore in una sotto-funzione, abortisce
+    cmp    dword [core_error_code], 0   
     jnz    .parser_exit
 
-    call   check_format_directive       ; Intercetta direttiva format
+    call   check_format_directive       
     test   al, al
-    jnz    .parser_main_loop            ; Se processato, ESI è già avanzato correttamente, non saltare a .parser_next!
+    jnz    .parser_main_loop            
 
-    call   check_segment_directive      ; Intercetta direttiva segment
+    call   check_segment_directive      
     test   al, al
-    jnz    .parser_main_loop            ; Come sopra
+    jnz    .parser_main_loop            
 
-    call   check_entry_directive        ; Intercetta direttiva entry
+    call   check_entry_directive        
     test   al, al
-    jnz    .parser_main_loop            ; Come sopra
+    jnz    .parser_main_loop            
 
-    call   check_symbol_assignment      ; Risolve lunghezze ed etichette (=)
+    call   check_symbol_assignment      
     test   al, al
-    jnz    .parser_main_loop            ; Come sopra
+    jnz    .parser_main_loop            
 
-    mov    bl, [active_isa_target]      ; Autodetect hardware registri
+    mov    bl, [active_isa_target]      
     test   bl, bl
     jnz    .dispatch
     call   probe_register_isa_intent
@@ -36,11 +36,11 @@ execute_universal_parser:
 
 .dispatch:
     call   execute_instruction_assembly_dispatch
-    cmp    dword [core_error_code], 0   ; Verifica errore post-dispatch
+    cmp    dword [core_error_code], 0   
     jnz    .parser_exit
 
 .parser_next:
-    add    esi, 64                      ; Avanza allo slot da 64 byte in cache line
+    add    esi, 64                      
     jmp    .parser_main_loop
 
 .parser_exit:
@@ -48,31 +48,31 @@ execute_universal_parser:
 
 check_format_directive:
     mov    eax, [esi]
-    cmp    eax, 'mrof'                  ; Verifica "form" ('form' in little endian)
+    cmp    eax, 'mrof'                  
     jne    .not_format
-    cmp    word [esi+4], 'at'           ; Verifica "at"
+    cmp    word [esi+4], 'at'           
     jne    .not_format
 
-    add    esi, 64                      ; Avanza ESI per puntare all'argomento del format
+    add    esi, 64                      
     mov    eax, [esi]
-    cmp    eax, 'anib'                  ; "bina" ('bina' in little-endian = 0x616E6962) per binary
+    cmp    eax, 'anib'                  
     je     .set_bin
-    cmp    eax, 'FLE '                  ; "ELF " (Little endian: 0x20464C45)
+    cmp    eax, 'FLE '                  
     je     .eval_elf
-    cmp    eax, '  EP'                  ; "PE  "
+    cmp    eax, '  EP'                  
     je     .eval_pe
 
-    jmp    .trigger_format_error        ; Formato invalido o sconosciuto
+    jmp    .trigger_format_error        
 
 .set_bin:
-    mov    byte [output_format_type], 0 ; Format 0 = binary piatto crudo
-    add    esi, 64                      ; Consuma l'argomento (es. "binary")
+    mov    byte [output_format_type], 0 
+    add    esi, 64                      
     mov    al, 1
     ret
 .eval_elf:
-    cmp    byte [esi+4], '6'            ; ELF64
+    cmp    byte [esi+4], '6'            
     je     .set_elf64
-    mov    byte [output_format_type], 1 ; ELF32 default
+    mov    byte [output_format_type], 1 
     add    esi, 64
     mov    al, 1
     ret
@@ -82,9 +82,9 @@ check_format_directive:
     mov    al, 1
     ret
 .eval_pe:
-    cmp    byte [esi+4], '6'            ; PE64
+    cmp    byte [esi+4], '6'            
     je     .set_pe64
-    mov    byte [output_format_type], 3 ; PE32 default
+    mov    byte [output_format_type], 3 
     add    esi, 64
     mov    al, 1
     ret
@@ -99,12 +99,12 @@ check_format_directive:
 
 check_segment_directive:
     mov    eax, [esi]
-    cmp    eax, 'mges'                  ; Verifica "segm"
+    cmp    eax, 'mges'                  
     jne    .not_segment
-    cmp    dword [esi+4], 'tnes'        ; Verifica "ent" ('tnes' invertito)
-    jne    .not_segment                 ; (Se il token è più corto controlla solo i caratteri necessari)
+    cmp    dword [esi+4], 'tnes'        
+    jne    .not_segment                 
     
-    add    esi, 128                     ; Salta sia "segment" che l'argomento hardware successivo
+    add    esi, 128                     
     mov    al, 1
     ret
 .not_segment:
@@ -113,13 +113,12 @@ check_segment_directive:
 
 check_entry_directive:
     mov    eax, [esi]
-    cmp    eax, 'rtne'                  ; Verifica "entr"
+    cmp    eax, 'rtne'                  
     jne    .not_entry
-    cmp    byte [esi+4], 'y'            ; Verifica "y"
+    cmp    byte [esi+4], 'y'            
     jne    .not_entry
 
-    add    esi, 128                     ; Salta sia "entry" che l'etichetta target (es. _start)
-    ; [...] Gestione interna per aggiornare [hardware_entry_point]
+    add    esi, 128                     
     mov    al, 1
     ret
 .not_entry:
@@ -127,11 +126,10 @@ check_entry_directive:
     ret
 
 check_symbol_assignment:
-    cmp    byte [esi+64], '='           ; Identifica l'operatore costante nello slot successivo
+    cmp    byte [esi+64], '='           
     jne    .not_assignment
     
-    ; [...] Risolve l'equazione leggendo il [location_counter]
-    add    esi, 128                     ; Salta sia il Simbolo che l'operatore '=' consumato
+    add    esi, 128                     
     mov    al, 1
     ret
 .not_assignment:
@@ -156,7 +154,7 @@ probe_register_isa_intent:
     cmp    al, 'x'
     je     .resolve_x
     mov    eax, [esi]
-    cmp    eax, 'orez'                  ; "zero" RISC-V
+    cmp    eax, 'orez'                  
     je     .confirm_riscv
     xor    al, al
     pop    esi
@@ -165,7 +163,7 @@ probe_register_isa_intent:
     cmp    byte [esi+1], 'a'
     jne    .confirm_x86
     cmp    byte [esi+2], 0
-    jz     .confirm_riscv               ; "ra" esatto = RISC-V
+    jz     .confirm_riscv               
     jmp    .confirm_x86
 .resolve_x:
     movzx  eax, byte [default_host_isa_context]
@@ -184,21 +182,23 @@ probe_register_isa_intent:
     pop    esi
     ret
 
-; --- STRUTTURA DI SCATOLA NERA E CONGELAMENTO ERRORI ---
 .trigger_format_error:
-    mov    dword [core_error_code], 0x06 ; Codice errore 0x06 (Invalid Format)
+    mov    text_error_lock, 1           ; Segnala blocco diagnostica interno
+    mov    dword [core_error_code], 0x06 
     jmp    .freeze_diagnostics
 
 .trigger_illegal_instruction:
-    mov    dword [core_error_code], 0x05 ; Codice errore 0x05 (Illegal Instruction)
+    mov    dword [core_error_code], 0x05 
 
 .freeze_diagnostics:
-    mov    [error_token_ptr], esi       ; Salva indirizzo inizio stringa fallita
-    mov    eax, [esi+52]                ; Estrae l'offset RAM del file originale
+    mov    [error_token_ptr], esi       
+    mov    eax, [esi+52]                
     mov    [error_file_addr], eax
-    mov    eax, [esi+56]                ; Estrae riga esatta
+    mov    eax, [esi+56]                
     mov    [error_line], eax
-    mov    eax, [esi+60]                ; Estrae colonna esatta
+    mov    eax, [esi+60]                
     mov    [error_column], eax
-    xor    al, al                       ; Restituisce 0 per rompere i controlli
+    xor    al, al                       
     ret
+
+text_error_lock db 0
