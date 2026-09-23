@@ -68,6 +68,22 @@ decode_riscv_operands:
 
 extract_riscv_reg_id:
     push   esi
+    
+    ; --- CONTROLLO ALIAS COMPATIBILITÀ ABI RISC-V ---
+    mov    eax, [esi]
+    cmp    eax, 'zero'                  ; Registro x0 costante
+    je     .ret_x0
+    cmp    word [esi], 'ra'             ; Return Address -> x1
+    je     .ret_x1
+    cmp    word [esi], 'sp'             ; Stack Pointer -> x2
+    je     .ret_x2
+    cmp    word [esi], 'gp'             ; Global Pointer -> x3
+    je     .ret_x3
+
+    mov    al, [esi]
+    cmp    al, 'x'                      ; Deve iniziare obbligatoriamente per 'x'
+    jne    .invalid_reg
+    
     inc    esi                          ; Salta la 'x'
     movzx  eax, byte [esi]
     sub    eax, '0'                     ; Prima cifra
@@ -90,6 +106,23 @@ extract_riscv_reg_id:
     ret
 .invalid_reg:
     xor    eax, eax
+    pop    esi
+    ret
+
+.ret_x0:
+    xor    al, al
+    pop    esi
+    ret
+.ret_x1:
+    mov    al, 1
+    pop    esi
+    ret
+.ret_x2:
+    mov    al, 2
+    pop    esi
+    ret
+.ret_x3:
+    mov    al, 3
     pop    esi
     ret
 
