@@ -1,6 +1,9 @@
 assemble_x86_instruction_node:
     ; ESI = slot token istruzione, EDI = buffer codice macchina finale
+    push   esi                          ; Preserva ESI per non sfasare il parser centrale
+    call   reset_x86_prefix_states      ; Svuota i prefissi delle istruzioni precedenti
     call   decode_all_x86_operands      ; Estrae registri e immediati dello slot
+    pop    esi                          ; Ripristina ESI originale
     
     mov    al, [prefix_size_override]   ; Override dimensione (0x66) per x86-16
     test   al, al
@@ -46,7 +49,7 @@ assemble_x86_instruction_node:
     jmp    .emit_base_op
 
 .emit_evex_v5:
-    mov    al, 0x62                     ; Byte magico EVEX a 4 byte (v5 APX)
+    mov    al, 0x62                     ; Byte magico EVEX a 4 byte (Intel APX v5 / AVX-512)
     mov    [edi], al
     inc    edi
     mov    al, [evex_p0_byte]           ; payload P0 (R, X, B, R' inversi)
@@ -68,13 +71,13 @@ assemble_x86_instruction_node:
     test   al, al
     jz     .x86_node_done
     
-    mov    al, [modrm_mod]              ; Costruzione byte ModR/M
+    mov    al, [modrm_mod]              ; Costruzione byte ModR/M (Default 11b registro-registro)
     shl    al, 6
-    mov    bl, [modrm_reg]
-    and    bl, 0x07
+    mov    bl, [modrm_reg]              ; Campo REG (Contiene il SORGENTE)
+    and    bl, 0x07                     ; Isola i 3 bit inferiori richiesti dall'hardware Intel
     shl    bl, 3
     or     al, bl
-    mov    bl, [modrm_rm]
+    mov    bl, [modrm_rm]               ; Campo R/M (Contiene la DESTINAZIONE)
     and    bl, 0x07
     or     al, bl
     mov    [edi], al
@@ -83,65 +86,138 @@ assemble_x86_instruction_node:
 .x86_node_done:
     ret
 
+reset_x86_prefix_states:
+    ; Pulisce lo stato dei prefissi per evitare che istruzioni precedenti sporchino la corrente
+    mov    byte [x86_prefix_type], 0
+    mov    byte [prefix_size_override], 0
+    mov    byte [rex_prefix_byte], 0
+    mov    byte [vex_p0_byte], 0
+    mov    byte [vex_p1_byte], 0
+    mov    byte [evex_p0_byte], 0xFC    ; Bit hardware alti a 1 (inversi)
+    mov    byte [evex_p1_byte], 0x78
+    mov    byte [evex_p2_byte], 0x00
+    mov    byte [modrm_reg], 0
+    mov    byte [modrm_rm], 0
+    mov    byte [reg_src_vvvv_id], 0
+    ret
+
 decode_all_x86_operands:
+    ; NOTA: Swap dei campi implementato per seguire lo standard architetturale Intel x86 ModR/M
     add    esi, 64                      ; Avanza all'operando destinazione
     mov    al, [esi]
     test   al, al
     jz     .decode_exit
-    call   classify_any_x86_register    ; Identifica tipo registro ed estensioni
-    mov    [modrm_reg], al
+    call   classify_any_x86_register    
+    mov    [modrm_rm], al               ; DESTINAZIONE mappata correttamente su campo R/M
     
     add    esi, 64                      ; Avanza all'operando sorgente
     mov    al, [esi]
     test   al, al
     jz     .decode_exit
     call   classify_any_x86_register
-    mov    [modrm_rm], al
-    mov    [reg_src_vvvv_id], al        ; Mappa provvisoriamente anche per EVEX vvvv
+    mov    [modrm_reg], al              ; SORGENTE mappato correttamente su campo REG
+    mov    [reg_src_vvvv_id], al        
 .decode_exit:
     ret
 
 classify_any_x86_register:
+    ; Input: ESI = punta allo slot del registro
+    ; Output: AL = ID registro pulito (0-31)
+    push   esi
     mov    al, [esi]
-    cmp    al, 'z'                      ; Controllo vettori ZMM (AVX-512)
+    cmp    al, 'z'                      ; Vettori ZMM (AVX-512)
     je     .confirm_zmm
-    cmp    al, 'r'                      ; Controllo GPR estesi r8-r31 o legacy
+    cmp    al, 'r'                      ; General Purpose Registers (rax-r15, r16-r31)
     je     .confirm_r_gpr
-    xor    al, al                       ; Default RAX / ID 0
-    ret
-.confirm_zmm:
-    mov    byte [x86_prefix_type], 3    ; Forza EVEX a 4 byte per AVX-512
-    xor    al, al
-    ret
-.confirm_r_gpr:
-    mov    bl, [esi+1]
-    cmp    bl, '1'                      ; Controllo se numerico esteso
-    jae    .eval_apx_egpr
-    xor    al, al
-    ret
-.eval_apx_egpr:
-    mov    cl, [esi+2]                  ; Legge seconda cifra per R16-R31
-    test   cl, cl
-    jz     .legacy_r8_r15
-    mov    byte [x86_prefix_type], 3    ; Forza EVEX per estensione APX v5 EGPR
-    mov    al, 16                       ; Esempio base ID registro APX
-    ret
-.legacy_r8_r15:
-    mov    byte [rex_prefix_byte], 0x41 ; Forza REX.B per r8-r15
-    mov    al, 8
+    
+    ; Fallback implicito: se non riconosciuto assume RAX (ID 0)
+    xor    eax, eax
+    pop    esi
     ret
 
-x86_prefix_type          db 0           ; 0=Legacy, 1=VEX2, 2=VEX3, 3=EVEX
-prefix_size_override     db 0           ; 0x66 attivo se 1
-rex_prefix_byte          db 0           ; REX byte
+.confirm_zmm:
+    mov    byte [x86_prefix_type], 3    ; Attiva EVEX (AVX-512)
+    xor    eax, eax                     ; Esempio zmm0
+    pop    esi
+    ret
+
+.confirm_r_gpr:
+    inc    esi                          ; Salta 'r'
+    movzx  eax, byte [esi]
+    
+    ; Controlla se è un registro legacy alfabetico (rax, rbx, rcx, rdx, rbp, rsi, rdi, rsp)
+    cmp    al, 'a'
+    jae    .parse_legacy_names
+    
+    ; Altrimenti è un registro numerico a 64-bit esteso (r8-r31)
+    sub    eax, '0'                     ; Converte prima cifra
+    cmp    eax, 9
+    ja     .invalid_gpr
+    
+    movzx  ebx, byte [esi+1]            ; Controlla seconda cifra (es. r12, r30)
+    test   bl, bl
+    jz     .eval_r8_r15_prefixes        ; Una sola cifra -> r8 o r9
+    sub    bl, '0'
+    cmp    bl, 9
+    ja     .eval_r8_r15_prefixes        ; Carattere non numerico di terminazione
+    
+    imul   eax, 10
+    add    eax, ebx                     ; Calcola ID esteso (10-31)
+
+    ; Gestione dei prefissi per i GPR ad altissima estensione APX (r16-r31)
+    cmp    eax, 16
+    jae    .eval_apx_egpr
+    
+.eval_r8_r15_prefixes:
+    ; Registri r8-r15 richiedono il prefisso REX legacy (bit REX.B attivo)
+    mov    byte [rex_prefix_byte], 0x41 ; 0x40 (REX base) | 0x01 (REX.B)
+    pop    esi
+    ret
+
+.eval_apx_egpr:
+    ; Registri r16-r31 richiedono l'estensione EVEX a 4 byte di Intel APX (v5)
+    mov    byte [x86_prefix_type], 3    ; Attiva la logica di emissione EVEX
+    and    byte [evex_p0_byte], 0xF7    ; Abbassa il bit EVEX.R' (bit 3 invertito) per mappare r16-r31
+    pop    esi
+    ret
+
+.parse_legacy_names:
+    ; Mappatura super-veloce degli ID hardware dei registri GPR x86 classici
+    cmp    al, 'a' ; rax -> 0
+    je     .ret_0
+    cmp    al, 'c' ; rcx -> 1
+    je     .ret_1
+    cmp    al, 'd' ; rdx -> 2
+    je     .ret_2
+    cmp    al, 'b' ; rbx -> 3
+    je     .ret_3
+    ; Fallback di sicurezza per gli altri nomi (rsp, rbp, rsi, rdi)
+    xor    eax, eax
+    pop    esi
+    ret
+
+.ret_0: xor al, al | pop esi | ret
+.ret_1: mov al, 1  | pop esi | ret
+.ret_2: mov al, 2  | pop esi | ret
+.ret_3: mov al, 3  | pop esi | ret
+
+.invalid_gpr:
+    xor    eax, eax
+    pop    esi
+    ret
+
+align_to_l1
+x86_prefix_type          db 0
+prefix_size_override     db 0
+rex_prefix_byte          db 0
 vex_p0_byte              db 0
 vex_p1_byte              db 0
-evex_p0_byte             db 0xFC        ; Default bit inversi a 1
+evex_p0_byte             db 0xFC
 evex_p1_byte             db 0x78
 evex_p2_byte             db 0x00
-x86_base_opcode          db 0x01        ; Esempio opcode base ADD
+x86_base_opcode          db 0x01        ; Opcode ADD standard
 modrm_required           db 1
-modrm_mod                db 3           ; Default registro-registro (11b)
+modrm_mod                db 3
 modrm_reg                db 0
 modrm_rm                 db 0
 reg_src_vvvv_id          db 0
