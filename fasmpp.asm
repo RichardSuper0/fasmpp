@@ -15,7 +15,7 @@ include 'src/assembler.inc'             ; Regista centrale dell'emissione dei bi
 
 ; --- SOTTO-MOTORI DI CODIFICA (TARGETS INCLUSI) ---
 include 'src/targets/x86_core.inc'      ; Generatore bit x86 (16-bit fino a v5/APX)
-include 'src/targets/arm_core.asm'      ; Generatore bit ARM (v1-v9)
+include 'src/targets/arm_core.inc'      ; Generatore bit ARM (v1-v9)
 include 'src/targets/riscv_core.inc'    ; Generatore bit RISC-V (Tutte le versioni)
 
 ; --- BLOCCO UNICO DEI DATI STATICI (A CODA DEL FILE) ---
