@@ -37,26 +37,20 @@ assemble_arm_instruction_node:
 
 decode_arm_operands:
     ; Estrazione dinamica operandi: istruzione -> rd -> rn -> rm (distanti 64 byte l'uno dall'altro)
-    
-    ; 1. Elabora RD (Destinazione)
     add    esi, 64                      
     call   parse_single_arm_register
     mov    [arm_rd], al
 
-    ; 2. Elabora RN (Primo sorgente)
     add    esi, 64                      
     call   parse_single_arm_register
     mov    [arm_rn], al
 
-    ; 3. Elabora RM (Secondo sorgente)
     add    esi, 64                      
     call   parse_single_arm_register
     mov    [arm_rm], al
     ret
 
 parse_single_arm_register:
-    ; Input: ESI = punta allo slot del registro corrente
-    ; Output: AL = ID registro numerico pulito (0-31)
     push   esi
     mov    al, [esi]
     
@@ -65,7 +59,6 @@ parse_single_arm_register:
     cmp    al, 'x'                      ; Registro 'x' indica ARM64
     je     .set_arm64
     
-    ; Altrimenti assume contesto ARM32 per registri 'r'
     mov    byte [arm_mode_width], 32
     jmp    .parse_digits
 
@@ -73,40 +66,38 @@ parse_single_arm_register:
     mov    byte [arm_mode_width], 64
 
 .parse_digits:
-    inc    esi                          ; Salta il prefisso del registro ('w', 'x' o 'r')
+    inc    esi                          ; Salta il prefisso ('w', 'x' o 'r')
     movzx  eax, byte [esi]
-    sub    eax, '0'                     ; Converte il primo carattere in numero
+    sub    eax, '0'                     ; Converte il primo carattere
     cmp    eax, 9
-    ja     .invalid_reg                 ; Sicurezza: non è un numero valido
+    ja     .invalid_reg                 
     
-    ; Controlla se c'è una seconda cifra numerica (es. x12, x30)
     movzx  ebx, byte [esi+1]
     test   bl, bl
-    jz     .done_parsing                ; Se è zero, il numero ha una sola cifra ed è già in EAX
+    jz     .done_parsing                
     
     sub    bl, '0'
     cmp    bl, 9
-    ja     .done_parsing                ; Se non è un numero (es. virgola o spazio), si ferma alla prima cifra
+    ja     .done_parsing                
     
-    ; Algoritmo: (Cifra1 * 10) + Cifra2
     imul   eax, 10
     add    eax, ebx
 
 .done_parsing:
-    mask_reg_id eax                     ; Applica la maschera di sicurezza a 5 bit (0-31) dall'inc delle macro
+    mask_reg_id eax                     
     pop    esi
     ret
 
 .invalid_reg:
-    xor    eax, eax                     ; Fallback di sicurezza su registro 0
+    xor    eax, eax                     
     pop    esi
     ret
 
 align_to_l1
-arm_mode_width     db 64                ; Conﬁgurazione architettura (32 o 64)
-arm32_base_opcode  dd 0x00800000        ; Opcode ADD ARM32
-arm64_base_opcode  dd 0x8B000000        ; Opcode ADD ARM64
-arm_cond_field     db 0x0E              ; Condizione predefinita ALWAYS (1110b)
+arm_mode_width     db 64                
+arm32_base_opcode  dd 0x00800000        
+arm64_base_opcode  dd 0x8B000000        
+arm_cond_field     db 0x0E              
 arm_rd             db 0
 arm_rn             db 0
 arm_rm             db 0
