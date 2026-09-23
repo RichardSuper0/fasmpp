@@ -196,10 +196,22 @@ classify_any_x86_register:
     pop    esi
     ret
 
-.ret_0: xor al, al | pop esi | ret
-.ret_1: mov al, 1  | pop esi | ret
-.ret_2: mov al, 2  | pop esi | ret
-.ret_3: mov al, 3  | pop esi | ret
+.ret_0:
+    xor    al, al
+    pop    esi
+    ret
+.ret_1:
+    mov    al, 1
+    pop    esi
+    ret
+.ret_2:
+    mov    al, 2
+    pop    esi
+    ret
+.ret_3:
+    mov    al, 3
+    pop    esi
+    ret
 
 .invalid_gpr:
     xor    eax, eax
