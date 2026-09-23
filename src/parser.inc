@@ -183,7 +183,8 @@ probe_register_isa_intent:
     ret
 
 .trigger_format_error:
-    mov    text_error_lock, 1           ; Segnala blocco diagnostica interno
+    mov    byte [text_error_lock], 1
+          ; Segnala blocco diagnostica interno
     mov    dword [core_error_code], 0x06 
     jmp    .freeze_diagnostics
 
