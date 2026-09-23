@@ -1,7 +1,3 @@
-; --- DICHIARAZIONI DI COMPATIBILITÀ FORWARD ---
-; Comunica a FASM che questi simboli sono allocati altrove nel file principale
-format binary
-
 execute_lexer_32:
     ; ESI = sorgente asm, EDX = token scratch pad (slot 64 byte)
     
