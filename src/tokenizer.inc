@@ -2,8 +2,8 @@ execute_tokenizer_32:
     ; ESI = matrice grezza lexer, EDX = token_scratch_matrix allineata L1
     
 .tokenizer_loop:
-    cmp    dword [core_error_code], 0   ; Controlla se e gia scattato un errore
-    jnz    .tokenizer_done              ; Se c'e un errore si ferma e bom
+    cmp    dword [core_error_code], 0   ; Controlla se è già scattato un errore
+    jnz    .tokenizer_done              ; Se c'è un errore si ferma
 
     mov    al, [esi]
     test   al, al
@@ -12,8 +12,9 @@ execute_tokenizer_32:
     je     .tokenizer_done
 
     call   copy_token_and_metadata      ; Copia stringa e metadati geometrici
-    add    edx, 64                      ; Prossimo slot Cache L1
-    add    esi, 64                      ; Prossimo slot sorgente
+    
+    add    edx, 64                      ; Avanza fisso al prossimo slot Cache L1
+    add    esi, 64                      ; Avanza fisso al prossimo slot sorgente
     jmp    .tokenizer_loop
 
 .tokenizer_done:
@@ -21,6 +22,7 @@ execute_tokenizer_32:
     ret
 
 copy_token_and_metadata:
+    push   esi                          ; Salva gli indirizzi base per non perderli
     push   edx
     xor    ecx, ecx                     ; Contatore lunghezza token
 
@@ -32,14 +34,15 @@ copy_token_and_metadata:
     inc    esi
     inc    edx
     inc    ecx
-    cmp    ecx, 51                      ; Protezione coda metadati
+    cmp    ecx, 51                      ; Protezione coda metadati (lascia 12 byte liberi)
     jne    .copy_loop
 
 .metadata_flush:
-    pop    edx                          ; Ripristina indirizzo base slot
-    push   edx
+    pop    edx                          ; Ripristina gli indirizzi base degli slot correnti
+    pop    esi
     
-    ; Sposta in blocco i 12 byte di metadati geometrici calcolati dal lexer
+    ; Sposta in sicurezza i 12 byte di metadati geometrici calcolati dal lexer
+    ; Ora gli offset +52, +56 e +60 sono calcolati correttamente dall'inizio dello slot!
     mov    eax, [esi+52]                ; Legge indirizzo RAM del file
     mov    [edx+52], eax
     mov    eax, [esi+56]                ; Legge riga
@@ -47,5 +50,4 @@ copy_token_and_metadata:
     mov    eax, [esi+60]                ; Legge colonna
     mov    [edx+60], eax
 
-    pop    edx
     ret
