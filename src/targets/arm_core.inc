@@ -1,103 +1,136 @@
+; ============================================================
+; BACKEND ARM BASE
+; ============================================================
+
 assemble_arm_instruction_node:
-    ; ESI = slot token istruzione, EDI = buffer output codice macchina
-    push   esi                          ; Preserva ESI per non sfasare il parser centrale
-    call   decode_arm_operands          ; Analizza gli slot operandi per riempire rd, rn, rm
-    pop    esi                          ; Ripristina ESI originale
-    
-    mov    al, [arm_mode_width]         ; Rileva larghezza (32 = ARM32, 64 = ARM64 nativo)
-    cmp    al, 64
-    je     .emit_arm64_word
-    
-    ; --- GENERAZIONE ARM32 LEGACY (Word a 32-bit fissi con esecuzione condizionale) ---
-    mov    eax, [arm32_base_opcode]
-    movzx  ebx, byte [arm_rd]
-    inject_reg_field eax, ebx, 12       ; ARM32 posiziona RD nei bit 12-15
-    movzx  ebx, byte [arm_rn]
-    inject_reg_field eax, ebx, 16       ; Posiziona RN nei bit 16-19
-    movzx  ebx, byte [arm_rm]
-    inject_reg_field eax, ebx, 0        ; Posiziona RM nei bit 0-3
-    movzx  ebx, byte [arm_cond_field]   ; Condizione hardware (es. 1110b per ALWAYS)
-    inject_imm_field eax, ebx, 0x0F, 28 ; Impacchetta nei bit 28-31
-    jmp    .write_arm_word
+    ; Supporto:
+    ;     add w0, w1, w2
+    ;     add x0, x1, x2
 
-.emit_arm64_word:
-    ; --- GENERAZIONE ARM64 / ARMv9 (A64 standard geometrico) ---
-    mov    eax, [arm64_base_opcode]     ; Carica base hardware (es. 0x8B000000 per ADD intero)
-    movzx  ebx, byte [arm_rd]
-    inject_reg_field eax, ebx, 0        ; ARM64 posiziona RD nei bit 0-4
-    movzx  ebx, byte [arm_rn]
-    inject_reg_field eax, ebx, 5        ; Posiziona RN nei bit 5-9
-    movzx  ebx, byte [arm_rm]
-    inject_reg_field eax, ebx, 16       ; Posiziona RM nei bit 16-20
+    cmp byte [esi+0], 'a'
+    jne .unsupported
 
-.write_arm_word:
-    mov    [edi], eax                   ; Sputa la Word generata sul buffer
-    add    edi, 4                       ; Avanza di 4 byte nel codice macchina
+    cmp byte [esi+1], 'd'
+    jne .unsupported
+
+    cmp byte [esi+2], 'd'
+    jne .unsupported
+
+    lea eax, [esi+64]
+    mov esi, eax
+    call parse_single_arm_register
+    mov [arm_rd], al
+
+    add esi, 64
+    call parse_single_arm_register
+    mov [arm_rn], al
+
+    add esi, 64
+    call parse_single_arm_register
+    mov [arm_rm], al
+
+    cmp byte [arm_mode_width], 64
+    je  .arm64
+
+    ; ARM32 ADD register:
+    ; cond=1110, opcode ADD, Rn/Rd/Rm
+    mov eax, 0xE0800000
+
+    movzx ebx, byte [arm_rd]
+    inject_reg_field eax, ebx, 12
+
+    movzx ebx, byte [arm_rn]
+    inject_reg_field eax, ebx, 16
+
+    movzx ebx, byte [arm_rm]
+    inject_reg_field eax, ebx, 0
+
+    mov [edi], eax
+    add edi, 4
+    add dword [location_counter], 4
     ret
 
-decode_arm_operands:
-    ; Estrazione dinamica operandi: istruzione -> rd -> rn -> rm (distanti 64 byte l'uno dall'altro)
-    add    esi, 64                      
-    call   parse_single_arm_register
-    mov    [arm_rd], al
+.arm64:
+    ; A64 ADD Xd, Xn, Xm
+    mov eax, 0x8B000000
 
-    add    esi, 64                      
-    call   parse_single_arm_register
-    mov    [arm_rn], al
+    movzx ebx, byte [arm_rd]
+    inject_reg_field eax, ebx, 0
 
-    add    esi, 64                      
-    call   parse_single_arm_register
-    mov    [arm_rm], al
+    movzx ebx, byte [arm_rn]
+    inject_reg_field eax, ebx, 5
+
+    movzx ebx, byte [arm_rm]
+    inject_reg_field eax, ebx, 16
+
+    mov [edi], eax
+    add edi, 4
+    add dword [location_counter], 4
     ret
+
+.unsupported:
+    mov dword [core_error_code], 0x05
+    ret
+
 
 parse_single_arm_register:
-    push   esi
-    mov    al, [esi]
-    
-    cmp    al, 'w'                      ; Registro 'w' indica ARM64
-    je     .set_arm64
-    cmp    al, 'x'                      ; Registro 'x' indica ARM64
-    je     .set_arm64
-    
-    mov    byte [arm_mode_width], 32
-    jmp    .parse_digits
+    ; ESI = token wN, xN o rN
+    ; AL  = registro 0-31
 
-.set_arm64:
-    mov    byte [arm_mode_width], 64
+    mov al, [esi]
 
-.parse_digits:
-    inc    esi                          ; Salta il prefisso ('w', 'x' o 'r')
-    movzx  eax, byte [esi]
-    sub    eax, '0'                     ; Converte il primo carattere
-    cmp    eax, 9
-    ja     .invalid_reg                 
-    
-    movzx  ebx, byte [esi+1]
-    test   bl, bl
-    jz     .done_parsing                
-    
-    sub    bl, '0'
-    cmp    bl, 9
-    ja     .done_parsing                
-    
-    imul   eax, 10
-    add    eax, ebx
+    cmp al, 'w'
+    je  .arm64_register
 
-.done_parsing:
-    mask_reg_id eax                     
-    pop    esi
+    cmp al, 'x'
+    je  .arm64_register
+
+    cmp al, 'r'
+    je  .arm32_register
+
+    xor eax, eax
     ret
 
-.invalid_reg:
-    xor    eax, eax                     
-    pop    esi
+.arm64_register:
+    mov byte [arm_mode_width], 64
+    jmp .parse_number
+
+.arm32_register:
+    mov byte [arm_mode_width], 32
+
+.parse_number:
+    movzx eax, byte [esi+1]
+    sub eax, '0'
+
+    cmp eax, 9
+    ja  .invalid
+
+    movzx ebx, byte [esi+2]
+    test bl, bl
+    jz   .done
+
+    cmp bl, '0'
+    jb  .done
+
+    cmp bl, '9'
+    ja  .done
+
+    sub ebx, '0'
+    imul eax, 10
+    add eax, ebx
+
+.done:
+    mask_reg_id eax
     ret
+
+.invalid:
+    xor eax, eax
+    ret
+
 
 align_to_l1
-arm_mode_width     db 64                
-arm32_base_opcode  dd 0x00800000        
-arm64_base_opcode  dd 0x8B000000        
-arm_cond_field     db 0x0E              
-arm_rd             db 0
-arm_rn             db 0
-arm_rm             db 0
+
+arm_mode_width db 64
+arm_rd         db 0
+arm_rn         db 0
+arm_rm         db 0
