@@ -1,53 +1,72 @@
+
+; ============================================================
+; TOKENIZER
+; ============================================================
+
 execute_tokenizer_32:
-    ; ESI = matrice grezza lexer, EDX = token_scratch_matrix allineata L1
-    
+    ; ESI = matrice token lexer
+    ; EDX = matrice token normalizzata
+
 .tokenizer_loop:
-    cmp    dword [core_error_code], 0   ; Controlla se è già scattato un errore
-    jnz    .tokenizer_done              ; Se c'è un errore si ferma
+    cmp dword [core_error_code], 0
+    jne .tokenizer_done
 
-    mov    al, [esi]
-    test   al, al
-    jz     .tokenizer_done
-    cmp    al, 0xFF                     ; EOF segnalato dal lexer
-    je     .tokenizer_done
+    mov al, [esi]
 
-    call   copy_token_and_metadata      ; Copia stringa e metadati geometrici
-    
-    add    edx, 64                      ; Avanza fisso al prossimo slot Cache L1
-    add    esi, 64                      ; Avanza fisso al prossimo slot sorgente
-    jmp    .tokenizer_loop
+    cmp al, 0xFF
+    je  .tokenizer_done
+
+    test al, al
+    jz   .skip_empty
+
+    call copy_token_and_metadata
+
+.skip_empty:
+    add esi, 64
+    add edx, 64
+    jmp .tokenizer_loop
 
 .tokenizer_done:
-    mov    byte [edx], 0xFF             ; Marcatore fine per il parser
+    mov byte [edx], 0xFF
     ret
 
+
 copy_token_and_metadata:
-    push   esi                          ; Salva gli indirizzi base per non perderli
-    push   edx
-    xor    ecx, ecx                     ; Contatore lunghezza token
+    push esi
+    push edi
+    push ecx
+
+    mov edi, edx
+    xor ecx, ecx
 
 .copy_loop:
-    mov    al, [esi]
-    mov    [edx], al                    ; Copia stringa token
-    test   al, al
-    jz     .metadata_flush
-    inc    esi
-    inc    edx
-    inc    ecx
-    cmp    ecx, 51                      ; Protezione coda metadati (lascia 12 byte liberi)
-    jne    .copy_loop
+    mov al, [esi]
 
-.metadata_flush:
-    pop    edx                          ; Ripristina gli indirizzi base degli slot correnti
-    pop    esi
-    
-    ; Sposta in sicurezza i 12 byte di metadati geometrici calcolati dal lexer
-    ; Ora gli offset +52, +56 e +60 sono calcolati correttamente dall'inizio dello slot!
-    mov    eax, [esi+52]                ; Legge indirizzo RAM del file
-    mov    [edx+52], eax
-    mov    eax, [esi+56]                ; Legge riga
-    mov    [edx+56], eax
-    mov    eax, [esi+60]                ; Legge colonna
-    mov    [edx+60], eax
+    test al, al
+    jz   .copy_done
 
+    cmp ecx, 51
+    jae .copy_done
+
+    mov [edi], al
+    inc esi
+    inc edi
+    inc ecx
+    jmp .copy_loop
+
+.copy_done:
+    mov byte [edi], 0
+
+    mov eax, [esi-ecx+52]
+    mov [edx+52], eax
+
+    mov eax, [esi-ecx+56]
+    mov [edx+56], eax
+
+    mov eax, [esi-ecx+60]
+    mov [edx+60], eax
+
+    pop ecx
+    pop edi
+    pop esi
     ret
