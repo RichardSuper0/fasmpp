@@ -1,30 +1,36 @@
+; ============================================================
+; DISPATCHER CENTRALE DEI BACKEND
+; ============================================================
+
 execute_instruction_assembly_dispatch:
-    ; ESI = slot token istruzione, EDI = buffer di output crudo final
-    
-    movzx  eax, byte [active_isa_target] ; Carica e azzera i bit alti per sicurezza
-    test   eax, eax                      ; Target non definito (0)?
-    jz     .exit
-    
-    dec    eax                           ; Se active_isa_target era 1 (x86), ora eax è 0
-    jz     .x86
-    dec    eax                           ; Se active_isa_target era 2 (ARM), ora eax è 0
-    jz     .arm
-    dec    eax                           ; Se active_isa_target era 3 (RISC-V), ora eax è 0
-    jz     .riscv
-.exit:
-    ret                                 ; Ritorna se ISA non supportata o invalida
+    ; ESI = slot token istruzione
+    ; EDI = buffer di output corrente
+
+    movzx eax, byte [active_isa_target]
+
+    cmp eax, 1
+    je  .x86
+
+    cmp eax, 2
+    je  .arm
+
+    cmp eax, 3
+    je  .riscv
+
+    mov dword [core_error_code], 0x04
+    ret
 
 .x86:
-    call   assemble_x86_instruction_node ; Salta al sotto-motore in targets/x86_core.inc
-    jmp    .update_ptr
+    call assemble_x86_instruction_node
+    jmp  .update_ptr
 
 .arm:
-    call   assemble_arm_instruction_node ; Salta al sotto-motore in targets/arm_core.inc
-    jmp    .update_ptr
+    call assemble_arm_instruction_node
+    jmp  .update_ptr
 
 .riscv:
-    call   assemble_riscv_instruction_node ; Salta al sotto-motore in targets/riscv_core.inc
+    call assemble_riscv_instruction_node
 
 .update_ptr:
-    mov    [output_current_ptr], edi    ; Aggiorna centralmente il contatore byte macchina
+    mov [output_current_ptr], edi
     ret
