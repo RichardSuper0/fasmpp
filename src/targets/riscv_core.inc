@@ -1,160 +1,231 @@
+; ============================================================
+; BACKEND RISC-V BASE
+; ============================================================
+
 assemble_riscv_instruction_node:
-    ; ESI = slot token istruzione, EDI = buffer output codice macchina
-    push   esi                          ; Preserva ESI per non sfasare il parser centrale
-    call   decode_riscv_operands        ; Isola i campi dei registri e immediati
-    pop    esi                          ; Ripristina ESI originale
-    
-    mov    al, [riscv_fmt_type]         ; Rileva formato geometrico (1=R, 2=I, 3=S, 4=B)
-    cmp    al, 2
-    je     .emit_i_type
-    
-    ; --- FORMATO R-TYPE (Istruzioni registro-registro) ---
-    mov    eax, [riscv_base_opcode]     ; Carica l'opcode base (7 bit inferiori)
-    movzx  ebx, byte [riscv_rd]
-    inject_reg_field eax, ebx, 7        ; Inietta campo RD (bit 7-11)
-    movzx  ebx, byte [riscv_funct3]
-    inject_imm_field eax, ebx, 0x07, 12 ; Inietta campo funct3 (bit 12-14)
-    movzx  ebx, byte [riscv_rs1]
-    inject_reg_field eax, ebx, 15       ; Inietta campo RS1 (bit 15-19)
-    movzx  ebx, byte [riscv_rs2]
-    inject_reg_field eax, ebx, 20       ; Inietta campo RS2 (bit 20-24)
-    movzx  ebx, byte [riscv_funct7]
-    inject_imm_field eax, ebx, 0x7F, 25 ; Inietta campo funct7 (bit 25-31)
-    jmp    .write_riscv_word
+    ; Supporto:
+    ;     add  x1, x2, x3
+    ;     addi x1, x2, 10
+
+    cmp byte [esi+0], 'a'
+    jne .unsupported
+
+    cmp byte [esi+1], 'd'
+    jne .unsupported
+
+    cmp byte [esi+2], 'd'
+    jne .check_addi
+
+    mov byte [riscv_fmt_type], 1
+    jmp .decode_operands
+
+.check_addi:
+    cmp byte [esi+1], 'd'
+    jne .unsupported
+
+    cmp byte [esi+2], 'd'
+    jne .unsupported
+
+    mov byte [riscv_fmt_type], 1
+
+.decode_operands:
+    lea eax, [esi+64]
+    mov esi, eax
+    call extract_riscv_reg_id
+    mov [riscv_rd], al
+
+    add esi, 64
+    call extract_riscv_reg_id
+    mov [riscv_rs1], al
+
+    add esi, 64
+
+    mov al, [esi]
+    cmp al, 'x'
+    je  .third_is_register
+
+    cmp al, 'z'
+    je  .third_is_register
+
+    mov byte [riscv_fmt_type], 2
+    call parse_riscv_immediate
+    mov [riscv_imm], eax
+    jmp .emit_i_type
+
+.third_is_register:
+    mov byte [riscv_fmt_type], 1
+    call extract_riscv_reg_id
+    mov [riscv_rs2], al
+
+    ; ADD rd, rs1, rs2
+    mov eax, 0x33
+
+    movzx ebx, byte [riscv_rd]
+    inject_reg_field eax, ebx, 7
+
+    movzx ebx, byte [riscv_rs1]
+    inject_reg_field eax, ebx, 15
+
+    movzx ebx, byte [riscv_rs2]
+    inject_reg_field eax, ebx, 20
+
+    mov [edi], eax
+    add edi, 4
+    add dword [location_counter], 4
+    ret
 
 .emit_i_type:
-    ; --- FORMATO I-TYPE (Istruzioni registro-immediato) ---
-    mov    eax, [riscv_base_opcode]
-    movzx  ebx, byte [riscv_rd]
+    ; ADDI rd, rs1, imm
+    mov eax, 0x13
+
+    movzx ebx, byte [riscv_rd]
     inject_reg_field eax, ebx, 7
-    movzx  ebx, byte [riscv_funct3]
-    inject_imm_field eax, ebx, 0x07, 12
-    movzx  ebx, byte [riscv_rs1]
+
+    movzx ebx, byte [riscv_rs1]
     inject_reg_field eax, ebx, 15
-    mov    ebx, [riscv_imm]             ; Carica interamente l'immediato a 32-bit dword
-    inject_imm_field eax, ebx, 0xFFF, 20 ; Impacchetta nei bit alti 20-31
 
-.write_riscv_word:
-    mov    [edi], eax                   ; Sputa la Word fissa a 32-bit sul buffer
-    add    edi, 4                       ; Avanza rigido di 4 byte sul buffer macchina
+    mov ebx, [riscv_imm]
+    inject_imm_field eax, ebx, 0xFFF, 20
+
+    mov [edi], eax
+    add edi, 4
+    add dword [location_counter], 4
     ret
 
-decode_riscv_operands:
-    ; Spostamento progressivo a slot da 64 byte
-    add    esi, 64                      ; Legge registro destinazione (RD)
-    call   extract_riscv_reg_id
-    mov    [riscv_rd], al
-    
-    add    esi, 64                      ; Legge registro sorgente 1 (RS1)
-    call   extract_riscv_reg_id
-    mov    [riscv_rs1], al
-    
-    add    esi, 64                      ; Legge terzo operando (RS2 o Immediato)
-    mov    al, [esi]
-    cmp    al, 'x'                      ; Se inizia con 'x' è un registro, altrimenti immediato
-    je     .operand_is_reg
-    
-    ; --- GESTIONE IMMEDIATO NUMERICO REALE ---
-    mov    byte [riscv_fmt_type], 2     ; Commuta la geometria su I-TYPE
-    call   parse_riscv_immediate        ; Estrae numericamente la stringa intera
-    mov    [riscv_imm], eax             ; Scrive l'intero valore a 32-bit (risolve dword clear)
+.unsupported:
+    mov dword [core_error_code], 0x05
     ret
 
-.operand_is_reg:
-    mov    byte [riscv_fmt_type], 1     ; Commuta la geometria su R-TYPE
-    call   extract_riscv_reg_id
-    mov    [riscv_rs2], al
-    ret
 
 extract_riscv_reg_id:
-    push   esi
-    
-    ; --- CONTROLLO ALIAS COMPATIBILITÀ ABI RISC-V ---
-    mov    eax, [esi]
-    cmp    eax, 'zero'                  ; Registro x0 costante
-    je     .ret_x0
-    cmp    word [esi], 'ra'             ; Return Address -> x1
-    je     .ret_x1
-    cmp    word [esi], 'sp'             ; Stack Pointer -> x2
-    je     .ret_x2
-    cmp    word [esi], 'gp'             ; Global Pointer -> x3
-    je     .ret_x3
+    ; ESI = token registro
+    ; AL  = registro 0-31
 
-    mov    al, [esi]
-    cmp    al, 'x'                      ; Deve iniziare obbligatoriamente per 'x'
-    jne    .invalid_reg
-    
-    inc    esi                          ; Salta la 'x'
-    movzx  eax, byte [esi]
-    sub    eax, '0'                     ; Prima cifra
-    cmp    eax, 9
-    ja     .invalid_reg
-    
-    movzx  ebx, byte [esi+1]            ; Controlla se c'è una seconda cifra
-    test   bl, bl
-    jz     .done_reg
-    sub    bl, '0'
-    cmp    bl, 9
-    ja     .done_reg
-    
-    imul   eax, 10
-    add    eax, ebx                     ; (Cifra1 * 10) + Cifra2
+    cmp byte [esi+0], 'z'
+    jne .check_alias
 
-.done_reg:
-    mask_reg_id eax                     ; Forza la maschera a 5 bit (0-31)
-    pop    esi
-    ret
-.invalid_reg:
-    xor    eax, eax
-    pop    esi
+    cmp byte [esi+1], 'e'
+    jne .check_alias
+
+    cmp byte [esi+2], 'r'
+    jne .check_alias
+
+    cmp byte [esi+3], 'o'
+    jne .check_alias
+
+    xor eax, eax
     ret
 
-.ret_x0:
-    xor    al, al
-    pop    esi
+.check_alias:
+    cmp byte [esi+0], 'r'
+    jne .check_sp
+
+    cmp byte [esi+1], 'a'
+    jne .check_sp
+
+    mov al, 1
     ret
-.ret_x1:
-    mov    al, 1
-    pop    esi
+
+.check_sp:
+    cmp byte [esi+0], 's'
+    jne .check_gp
+
+    cmp byte [esi+1], 'p'
+    jne .check_gp
+
+    mov al, 2
     ret
-.ret_x2:
-    mov    al, 2
-    pop    esi
+
+.check_gp:
+    cmp byte [esi+0], 'g'
+    jne .numeric
+
+    cmp byte [esi+1], 'p'
+    jne .numeric
+
+    mov al, 3
     ret
-.ret_x3:
-    mov    al, 3
-    pop    esi
+
+.numeric:
+    cmp byte [esi+0], 'x'
+    jne .invalid
+
+    movzx eax, byte [esi+1]
+    sub eax, '0'
+
+    cmp eax, 9
+    ja  .invalid
+
+    movzx ebx, byte [esi+2]
+    test bl, bl
+    jz   .done
+
+    cmp bl, '0'
+    jb  .done
+
+    cmp bl, '9'
+    ja  .done
+
+    sub ebx, '0'
+    imul eax, 10
+    add eax, ebx
+
+.done:
+    mask_reg_id eax
     ret
+
+.invalid:
+    xor eax, eax
+    ret
+
 
 parse_riscv_immediate:
-    ; Converte una stringa ASCII numerica puntata da ESI in un intero in EAX
-    push   esi
-    xor    eax, eax                     ; Accumulatore risultato
-    xor    ecx, ecx                     ; Registro di sbrigo per i caratteri
+    ; Supporta interi decimali positivi e negativi.
+    ; ESI = token immediato
+    ; EAX = valore risultante
 
-.imm_loop:
-    movzx  ecx, byte [esi]
-    test   cl, cl
-    jz     .imm_done
-    sub    cl, '0'
-    cmp    cl, 9
-    ja     .imm_done                    ; Si ferma se incontra caratteri non numerici
-    
-    imul   eax, 10
-    add    eax, ecx
-    inc    esi
-    jmp    .imm_loop
+    xor eax, eax
+    xor ecx, ecx
 
-.imm_done:
-    pop    esi
+    cmp byte [esi], '-'
+    jne .digits
+
+    mov ecx, 1
+    inc esi
+
+.digits:
+    movzx edx, byte [esi]
+
+    test dl, dl
+    jz   .finish
+
+    cmp dl, '0'
+    jb  .finish
+
+    cmp dl, '9'
+    ja  .finish
+
+    sub edx, '0'
+    imul eax, 10
+    add eax, edx
+
+    inc esi
+    jmp .digits
+
+.finish:
+    test ecx, ecx
+    jz   .done
+
+    neg eax
+
+.done:
     ret
 
+
 align_to_l1
-riscv_fmt_type      db 1                ; 1=R-Type, 2=I-Type
-riscv_base_opcode   dd 0x33             ; Opcode base intero standard RISC-V OP (ADD)
-riscv_rd            db 0
-riscv_rs1           db 0
-riscv_rs2           db 0
-riscv_funct3        db 0                ; Da mappare dinamicamente (es. 0x0 per ADD)
-riscv_funct7        db 0                ; Da mappare dinamicamente (es. 0x00 per ADD)
-riscv_imm           dd 0
+
+riscv_fmt_type    db 1
+riscv_rd          db 0
+riscv_rs1         db 0
+riscv_rs2         db 0
+riscv_imm         dd 0
